@@ -1,0 +1,523 @@
+#!/usr/bin/env python
+# -*- coding: iso-8859-1 -*-
+#
+# spamdb-curses: A human-friendly interface around spamdb(8)
+#
+# Martin Tournoij <martin@arp242.net>
+# http://code.google.com/p/spamdb-curses/
+# Free for any use. There are no restrictions.
+#
+
+import collections
+import curses
+import os
+import shutil
+import socket
+import subprocess
+import sys
+import time
+
+try:
+	import thread
+except ImportError:
+	import dummy_thread
+
+
+### Global variables
+
+# Items in list
+_spamdb = []
+
+# Current selected line
+_cursel = 0
+
+# Currently selected type (white or grey)
+_curtype = 'grey'
+
+# Status messages
+_status = []
+
+# File where the spamdb is stored
+_spamfile = '/var/db/spamd'
+
+# Not root, readonly mode
+_readonly = True
+
+_dnsthread = None
+
+def Main(screen):
+	"""
+	The main function, called by curses.wrapper()
+	"""
+
+	global _spamdb
+	global _curtype
+	global _cursel
+	global _spamfile
+	global _readonly
+
+	# Use "transparant" colors
+	curses.use_default_colors()
+
+	# Don't display cursor
+	curses.curs_set(0)
+
+	(maxy, maxx) = screen.getmaxyx()
+
+	_spamdb = GetSpamdb()
+
+	mainwin = screen.subwin(maxy-5, maxx, 0, 0)
+	MainWindow(mainwin)
+	UpdateCursor(mainwin, 0)
+
+	statuswin = screen.subwin(5, maxx, maxy - 5, 0)
+	thread.start_new_thread(DnsLookups, (statuswin,))
+
+	# Check if we can write the spamdb (And thus acually make changed)
+	# XXX This is not the most reliable manner, for example spamdb may be setuid
+	if not os.access(_spamfile, os.W_OK):
+		_readonly = True
+		UpdateStatus(statuswin, '%s not writeable, read-only mode' % _spamfile)
+	else:
+		_readonly = False
+		shutil.copy2(_spamfile, _spamfile + '.orig')
+		UpdateStatus(statuswin, 'Made a backup of %s at %s.orig' %
+			(_spamfile, _spamfile))
+	statuswin.refresh()
+
+	### Main loop
+	while True:
+		# Wait for input
+		c = screen.getch()
+
+		# Quit
+		if c == ord('q') or c == ord('x'):
+			break
+		# Go to whitelist
+		elif c == ord('w'):
+			if _curtype != 'white':
+				_curtype = 'white'
+				MainWindow(mainwin)
+				UpdateCursor(mainwin, 0, True)
+				mainwin.refresh()
+		# Go to greylist
+		elif c == ord('g'):
+			if _curtype != 'grey':
+				_curtype = 'grey'
+				MainWindow(mainwin)
+				UpdateCursor(mainwin, 0, True)
+				mainwin.refresh()
+		# Go to trapped list
+		elif c == ord('t'):
+			if _curtype != 'trapped':
+				_curtype = 'trapped'
+				MainWindow(mainwin)
+				UpdateCursor(mainwin, 0, True)
+				mainwin.refresh()
+		# Down
+		elif c in (curses.KEY_DOWN, ord('j')):
+			UpdateCursor(mainwin, 1)
+		elif c == ord('J'):
+			UpdateCursor(mainwin, 20)
+		# Up
+		elif c in (curses.KEY_UP, ord('k')):
+			UpdateCursor(mainwin, -1)
+		elif c == ord('K'):
+			UpdateCursor(mainwin, -20)
+		# Help
+		elif c == ord('?'):
+			HelpWindow(mainwin)
+			mainwin.refresh()
+			mainwin.getch()
+			MainWindow(mainwin)
+			mainwin.refresh()
+		# Select
+		elif c in (curses.KEY_ENTER, 10, ord(' ')):
+			dwin = DetailWindow(mainwin)
+			dwin.refresh()
+			dwin.getch()
+			dwin.clear()
+			MainWindow(mainwin)
+			mainwin.refresh()
+		# Whitelist
+		elif c == ord('W'):
+			if _readonly:
+				UpdateStatus(statuswin, 'Read-only mode. Cannot make changes.')
+			else:
+				Whitelist()
+				UpdateStatus(statuswin, 'Whitelisted ' + GetCursor()['ip'])
+			statuswin.refresh()
+		# Delete
+		elif c == ord('D'):
+			if _readonly:
+				UpdateStatus(statuswin, 'Read-only mode. Cannot make changes.')
+			else:
+				Delete()
+				UpdateStatus(statuswin, 'Deleted ' +  GetCursor()['ip'])
+			statuswin.refresh()
+		# Refresh spamdb
+		elif c == ord('r'):
+			UpdateStatus(statuswin, 'Refreshing database from spamdb...')
+			statuswin.refresh()
+			_spamdb = GetSpamdb()
+			MainWindow(mainwin)
+			mainwin.refresh()
+			UpdateStatus(statuswin, 'Done!')
+			statuswin.refresh()
+			thread.start_new_thread(DnsLookups, (statuswin,mainwin))
+		# Run spamd-setup
+		elif c == ord('s'):
+			if _readonly:
+				UpdateStatus(statuswin, 'Read-only mode. Cannot make changes.')
+				statuswin.refresh()
+			else:
+				UpdateStatus(statuswin, 'Starting spamd-setup in the background...')
+				statuswin.refresh()
+				thread.start_new_thread(SpamdSetup, (statuswin,))
+
+
+###
+### Window drawing (curses) stuff
+###
+def GetCursor():
+	"""
+	Get the currently selected row
+	"""
+	return _spamdb[_curtype][_cursel]
+
+def UpdateCursor(win, cur, absolute=False):
+	"""
+	Update the cursor position
+
+	win: Window object to draw cursor in (mainwindow)
+	cur: Amount to shift the curor position, negative to go up
+	absolute: Set cursor to absolute position n, instead of adding it to the
+	          current position.
+	"""
+
+	global _cursel
+
+	# "Delete" current cursor
+	win.addstr(_cursel + 2, 2, '  ')
+
+	if absolute:
+		_cursel = cur
+	else:
+		_cursel += cur
+
+	# Make sure we don't go before the first or beyond the last row
+	if _cursel > len(_spamdb[_curtype]) - 1:
+		_cursel = len(_spamdb[_curtype]) - 1
+	elif _cursel < 0:
+		_cursel = 0
+
+	win.addstr(_cursel + 2, 2, '-> ')
+	win.refresh()
+
+def UpdateStatus(win, text):
+	"""
+	Append text to status window
+	"""
+
+	global _status
+
+	_status.append(text)
+
+	win.clear()
+	win.border()
+	win.addstr(0, 2, ' STATUS - Press ? for help ', curses.A_BOLD)
+
+	i = 1
+	for line in _status[-3:]:
+		if i > 3:
+			break
+		win.addstr(i, 2, line)
+		i += 1
+
+def DetailWindow(rootwin):
+	"""
+	Show window with details for currently selected row.
+
+	rootwin: Window to draw a new Window in.
+
+	return: New window object
+	"""
+
+	rootwinsize = rootwin.getmaxyx()
+
+	# Get longest string
+	keylen = 0
+	vlen = 0
+	for k, v in GetCursor().iteritems():
+		if len(repr(k)) > keylen:
+			keylen = len(repr(k))
+		if len(repr(v)) > vlen:
+			vlen = len(repr(v))
+
+	totallen = keylen + vlen + 12
+	totalheight = len(GetCursor()) + 2
+
+	# Get center position
+	startx = (rootwinsize[1] / 2) - (totallen / 2)
+	starty = (rootwinsize[0] / 2) - (totalheight / 2)
+
+	win = curses.newwin(totalheight, totallen, starty, startx)
+	win.clear()
+	win.border()
+	win.addstr(0, 2, 'DETAILS', curses.A_BOLD)
+
+	i = 1
+	for k, v in _spamdb[_curtype][_cursel].iteritems():
+		win.addstr(i, 2, ' %s %s' % (k.ljust(keylen + 5), v))
+		i += 1
+
+	return win
+
+def MainWindow(win):
+	"""
+	Draw the main window
+	"""
+
+	win.clear()
+	win.border()
+	winsize = win.getmaxyx()
+
+	win.addstr(0, 2, ' ' + _curtype.upper() + ' - spamdb-curses 1.0 ', curses.A_BOLD)
+	header = '         IP                Expire             From'
+	win.addstr(1, 1, '%s%s' % (header, ' ' * (winsize[1] - len(header) - 2)),
+		curses.A_REVERSE)
+
+	i = 2
+	for l in _spamdb[_curtype]:
+		if _curtype == 'grey':
+			win.addstr(i, 5,
+				'%s | %s | %s' % (l['IP'].ljust(15), l['Expires at'], l['From']))
+		else:
+			win.addstr(i, 5,
+				'%s | %s | %s' % (l['IP'].ljust(15), l['Expires at'], l['DNS lookup']))
+
+		i += 1
+	UpdateCursor(win, 0)
+
+def HelpWindow(win):
+	"""
+	Draw help window inside win
+	"""
+
+	win.clear()
+	win.border()
+	winsize = win.getmaxyx()
+
+	text = '''
+spamdb-curses 1.0
+Martin Tournoij <martin@arp242.net>
+http://code.google.com/p/spamdb-curses/
+Free for any use. There are no restrictions.
+
+Keybinds:
+	?\t\tThis help
+	q, x\t\tExit
+	Up, h\t\tMove up
+	Down, j\t\tMove down
+	J\t\tMove 20 down
+	K\t\tMove 20 up
+	w\t\tShow WHITE list
+	g\t\tShow GREY list
+	t\t\tShow the TRAPPED list
+	Space, Enter\tShow details
+
+Interfacing with spamd:
+	r\t\tRefresh information from spamdb(8)
+	s\t\tRun spamd-setup(8)
+	W\t\tWhitelist selected entry or update the "last seen" field if
+	\t\tit's already whitelisted
+	D\t\tDelete selected entry
+
+See also:
+  spamd(8), spamdb(8), spamd-setup(8), spamlogd(8), spamd.conf(5)
+
+Press any key to return
+'''
+
+	win.addstr(0, 2, 'HELP', curses.A_BOLD)
+	i = 0
+	for line in text.split('\n'):
+		win.addstr(i, 2, line)
+		i += 1
+
+###
+### Actions and other functions
+###
+def GetSpamdb():
+	"""
+	Get db from spamdb(8) and put it into a nice structure
+
+	XXX We now fetch all reverse DNS entries at startup, this can take quite
+	a bit ... Maybe make this a seperate thread and do it in the background?
+
+	XXX collections.OrderedDict is only available in Python 2.7 Implement this
+	backport for Python >= 2.4: http://code.activestate.com/recipes/576693/
+	"""
+
+	proc = subprocess.Popen(['spamdb'], stdout=subprocess.PIPE)
+	output = proc.communicate()[0].split('\n')
+
+	spamdb = {
+		'white': [],
+		'grey': [],
+		'trapped': [],
+	}
+
+	for line in output:
+		if line.strip() == '':
+			continue
+
+		line = line.split('|')
+		tf = '%Y-%m-%d %H:%M'
+
+		if line[0].lower() == 'trapped':
+			row = collections.OrderedDict([
+				('ip', line[1]),
+				('expire', time.strftime(tf, time.localtime(float(line[2])))),
+			])
+		elif line[0].lower() == 'grey':
+			# type|source IP|helo|from|to|first|pass|expire|block|pass
+			# 0    1         2    3    4  5     6    7      8     9
+			row = collections.OrderedDict([
+				('From', line[3]),
+				('To', line[4]),
+				('IP', line[1]),
+				('SMTP EHLO', line[2]),
+				('DNS lookup', line[1]),
+				('First seen', time.strftime(tf, time.localtime(float(line[5])))),
+				('Whitelisted at', time.strftime(tf, time.localtime(float(line[6])))),
+				('Expires at', time.strftime(tf, time.localtime(float(line[7])))),
+				('Temporary failure #', line[8]),
+				('Passed to MTA #', line[9]),
+			])
+		elif line[0].lower() == 'white':
+			# type|source IP| | |first|pass|expire|block|pass
+			# 0    1         2 3 4     5    6      7     8
+			row = collections.OrderedDict([
+				('IP', line[1]),
+				('DNS lookup', line[1]),
+				('First seen', time.strftime(tf, time.localtime(float(line[4])))),
+				('Whitelisted at', time.strftime(tf, time.localtime(float(line[5])))),
+				('Expires at', time.strftime(tf, time.localtime(float(line[6])))),
+				('Temporary failure #', line[7]),
+				('Passed to MTA #', line[8]),
+			])
+
+		spamdb[line[0].lower()].append(row)
+
+	return spamdb
+
+def DnsLookups(statuswin, mainwin=None):
+	"""
+	Lookup the DNS in the background
+
+	This is meant to run inside a thread
+	"""
+
+	global _dnsthread
+	global _spamdb
+
+	UpdateStatus(statuswin, 'Looking up reverse DNS in the background...')
+	for t, lst in _spamdb.iteritems():
+		i = 0
+		for row in _spamdb[t]:
+			_spamdb[t][i]['DNS lookup'] = ReverseLookup(row['IP'])
+			i += 1
+
+	UpdateStatus(statuswin, 'DNS lookups done')
+	statuswin.refresh()
+	if mainwin:
+		MainWindow(mainwin)
+
+	thread.exit()
+
+def ReverseLookup(ip):
+	"""
+	Reverse DNS lookup (PTR record)
+	"""
+
+	#try:
+	#	a = socket.gethostbyaddr(ip)[0]
+	#	return a
+	#except socket.herror:
+	#	return ip
+
+	# At the moment dig works better because we can specify a timeout -- We're
+	# not going to wait for **slow** spammer DNS servers ...
+	# XXX Can this be handled better?
+	proc = subprocess.Popen(['dig', '-x', ip, '+short', '+time=1'], stdout=subprocess.PIPE)
+	output = proc.communicate()[0].split('\n')
+	return output[0].strip()
+
+def Whitelist():
+	"""
+	Whitelist currently selected row
+	"""
+
+	global _cursel
+	
+	if len(_spamdb[_curtype]) > 0:
+		try:
+			e = subprocess.check_call(['spamdb', '-a', _spamdb[_curtype][_cursel]['ip']])
+		except subprocess.CalledProcessError:
+			print 'Error calling spamdb -a %s' % _spamdb[_curtype][_cursel]['ip']
+			print 'Exit %s' % e
+			print sys.exc_info()[0]
+			sys.exit(1)
+
+		_spamdb['white'].append(_spamdb[_curtype][_cursel])
+		del _spamdb[_curtype][_cursel]
+
+		if _cursel > len(_spamdb[_curtype]) - 1:
+			_cursel -= 1
+
+def Delete():
+	"""
+	Delete currently selected row
+	"""
+
+	global _cursel
+
+	# Remove from db
+	if len(_spamdb[_curtype]) > 0:
+		try:
+			e = subprocess.check_call(['spamdb', '-d', _spamdb[_curtype][_cursel]['ip']])
+		except subprocess.CalledProcessError:
+			print 'Error calling spamdb -d %s' % _spamdb[_curtype][_cursel]['ip']
+			print 'Exit %s' % e
+			print sys.exc_info()[0]
+			sys.exit(1)
+
+		del _spamdb[_curtype][_cursel]
+
+		if _cursel > len(_spamdb[_curtype]) - 1:
+			_cursel -= 1
+
+def SpamdSetup(statuswin):
+	"""
+	Run spamd-setup(8) and put the output in statuswin
+
+	Intended to be started in a thread
+	"""
+
+	try:
+		e = subprocess.check_call(['spamd-setup'])
+		UpdateStatus(statuswin, 'spamd-setup complete')
+		statuswin.refresh()
+		thread.exit()
+	except subprocess.CalledProcessError:
+		print 'Error calling spamd-setup'
+		print 'Exit %s' % e
+		print sys.exc_info()[0]
+		sys.exit(1)
+
+if __name__ == '__main__':
+	try:
+		curses.wrapper(Main)
+	except KeyboardInterrupt:
+		pass

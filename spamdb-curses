@@ -43,7 +43,6 @@ _spamfile = '/var/db/spamd'
 # Not root, readonly mode
 _readonly = True
 
-_dnsthread = None
 
 def Main(screen):
 	"""
@@ -73,8 +72,9 @@ def Main(screen):
 	statuswin = screen.subwin(5, maxx, maxy - 5, 0)
 	thread.start_new_thread(DnsLookups, (statuswin,))
 
-	# Check if we can write the spamdb (And thus acually make changed)
-	# XXX This is not the most reliable manner, for example spamdb may be setuid
+	# Check if we can write the spamdb and acually make changes
+	# XXX This is not the most reliable manner, for example the spamdb binary
+	# may be setuid
 	if not os.access(_spamfile, os.W_OK):
 		_readonly = True
 		UpdateStatus(statuswin, '%s not writeable, read-only mode' % _spamfile)
@@ -419,7 +419,6 @@ def DnsLookups(statuswin, mainwin=None):
 	This is meant to run inside a thread
 	"""
 
-	global _dnsthread
 	global _spamdb
 
 	UpdateStatus(statuswin, 'Looking up reverse DNS in the background...')

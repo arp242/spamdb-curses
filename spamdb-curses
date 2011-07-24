@@ -7,6 +7,11 @@
 # http://code.google.com/p/spamdb-curses/
 # Free for any use. There are no restrictions.
 #
+# TODO before first release:
+# - Scroll windows
+# - User-defined cols to view
+# - Sorting of rows by any column
+# - Add the remaining switched listed in spamdb(8)
 
 import collections
 import curses
@@ -43,6 +48,8 @@ _spamfile = '/var/db/spamd'
 # Not root, readonly mode
 _readonly = True
 
+# Keep track of various locks
+_locks = {}
 
 def Main(screen):
 	"""
@@ -54,6 +61,7 @@ def Main(screen):
 	global _cursel
 	global _spamfile
 	global _readonly
+	global _locks
 
 	# Use "transparant" colors
 	curses.use_default_colors()
@@ -65,11 +73,11 @@ def Main(screen):
 
 	_spamdb = GetSpamdb()
 
-	mainwin = screen.subwin(maxy-5, maxx, 0, 0)
+	mainwin = screen.subwin(maxy - 6, maxx, 0, 0)
 	MainWindow(mainwin)
 	UpdateCursor(mainwin, 0)
 
-	statuswin = screen.subwin(5, maxx, maxy - 5, 0)
+	statuswin = screen.subwin(6, maxx, maxy - 6, 0)
 	thread.start_new_thread(DnsLookups, (statuswin,))
 
 	# Check if we can write the spamdb and acually make changes
@@ -90,6 +98,23 @@ def Main(screen):
 		# Wait for input
 		c = screen.getch()
 
+		# Terminal resize
+		if c == curses.KEY_RESIZE:
+			mainwin.clear()
+			mainwin.refresh()
+			statuswin.clear()
+			statuswin.refresh()
+			del mainwin
+			del statuswin
+
+			(maxy, maxx) = screen.getmaxyx()
+			mainwin = screen.subwin(maxy - 6, maxx, 0, 0)
+			MainWindow(mainwin)
+			UpdateCursor(mainwin, 0)
+			statuswin = screen.subwin(6, maxx, maxy - 6, 0)
+			UpdateStatus(statuswin, False)
+			mainwin.refresh()
+			statuswin.refresh()
 		# Quit
 		if c == ord('q') or c == ord('x'):
 			break
@@ -145,7 +170,9 @@ def Main(screen):
 				UpdateStatus(statuswin, 'Read-only mode. Cannot make changes.')
 			else:
 				Whitelist()
-				UpdateStatus(statuswin, 'Whitelisted ' + GetCursor()['ip'])
+				MainWindow(mainwin)
+				mainwin.refresh()
+				UpdateStatus(statuswin, 'Whitelisted ' + GetCursor()['IP'])
 			statuswin.refresh()
 		# Delete
 		elif c == ord('D'):
@@ -153,27 +180,39 @@ def Main(screen):
 				UpdateStatus(statuswin, 'Read-only mode. Cannot make changes.')
 			else:
 				Delete()
-				UpdateStatus(statuswin, 'Deleted ' +  GetCursor()['ip'])
+				MainWindow(mainwin)
+				mainwin.refresh()
+				UpdateStatus(statuswin, 'Deleted ' +  GetCursor()['IP'])
 			statuswin.refresh()
 		# Refresh spamdb
 		elif c == ord('r'):
-			UpdateStatus(statuswin, 'Refreshing database from spamdb...')
-			statuswin.refresh()
-			_spamdb = GetSpamdb()
-			MainWindow(mainwin)
-			mainwin.refresh()
-			UpdateStatus(statuswin, 'Done!')
-			statuswin.refresh()
-			thread.start_new_thread(DnsLookups, (statuswin,mainwin))
+			if _locks.get('refresh'):
+				UpdateStatus(statuswin, 'Already refreshing...')
+				statuswin.refresh()
+			else:
+				_locks['refresh'] = True
+
+				UpdateStatus(statuswin, 'Refreshing database from spamdb...')
+				statuswin.refresh()
+				_spamdb = GetSpamdb()
+				MainWindow(mainwin)
+				mainwin.refresh()
+				UpdateStatus(statuswin, 'Done!')
+				statuswin.refresh()
+				thread.start_new_thread(DnsLookups, (statuswin,mainwin))
 		# Run spamd-setup
 		elif c == ord('s'):
 			if _readonly:
 				UpdateStatus(statuswin, 'Read-only mode. Cannot make changes.')
 				statuswin.refresh()
 			else:
-				UpdateStatus(statuswin, 'Starting spamd-setup in the background...')
-				statuswin.refresh()
-				thread.start_new_thread(SpamdSetup, (statuswin,))
+				if _locks.get('spamdsetup'):
+					UpdateStatus(statuswin, 'Already running spamd-setup...')
+					statuswin.refresh()
+				else:
+					UpdateStatus(statuswin, 'Starting spamd-setup in the background...')
+					statuswin.refresh()
+					thread.start_new_thread(SpamdSetup, (statuswin,))
 
 
 ###
@@ -206,10 +245,13 @@ def UpdateCursor(win, cur, absolute=False):
 		_cursel += cur
 
 	# Make sure we don't go before the first or beyond the last row
+	winsize = win.getmaxyx()
 	if _cursel > len(_spamdb[_curtype]) - 1:
 		_cursel = len(_spamdb[_curtype]) - 1
 	elif _cursel < 0:
 		_cursel = 0
+	elif _cursel > winsize[0] - 4:
+		_cursel = winsize[0] - 4
 
 	win.addstr(_cursel + 2, 2, '-> ')
 	win.refresh()
@@ -221,15 +263,16 @@ def UpdateStatus(win, text):
 
 	global _status
 
-	_status.append(text)
+	if text:
+		_status.append(text)
 
 	win.clear()
 	win.border()
 	win.addstr(0, 2, ' STATUS - Press ? for help ', curses.A_BOLD)
 
 	i = 1
-	for line in _status[-3:]:
-		if i > 3:
+	for line in _status[-4:]:
+		if i > 4:
 			break
 		win.addstr(i, 2, line)
 		i += 1
@@ -289,6 +332,9 @@ def MainWindow(win):
 
 	i = 2
 	for l in _spamdb[_curtype]:
+		if i > winsize[0] - 2:
+			break;
+
 		if _curtype == 'grey':
 			win.addstr(i, 5,
 				'%s | %s | %s' % (l['IP'].ljust(15), l['Expires at'], l['From']))
@@ -297,6 +343,8 @@ def MainWindow(win):
 				'%s | %s | %s' % (l['IP'].ljust(15), l['Expires at'], l['DNS lookup']))
 
 		i += 1
+	
+	win.addstr(1, 2, repr(i - 2), curses.A_REVERSE)
 	UpdateCursor(win, 0)
 
 def HelpWindow(win):
@@ -377,8 +425,8 @@ def GetSpamdb():
 
 		if line[0].lower() == 'trapped':
 			row = collections.OrderedDict([
-				('ip', line[1]),
-				('expire', time.strftime(tf, time.localtime(float(line[2])))),
+				('IP', line[1]),
+				('Expire', time.strftime(tf, time.localtime(float(line[2])))),
 			])
 		elif line[0].lower() == 'grey':
 			# type|source IP|helo|from|to|first|pass|expire|block|pass
@@ -420,20 +468,25 @@ def DnsLookups(statuswin, mainwin=None):
 	"""
 
 	global _spamdb
+	global _locks
 
-	UpdateStatus(statuswin, 'Looking up reverse DNS in the background...')
-	for t, lst in _spamdb.iteritems():
-		i = 0
-		for row in _spamdb[t]:
-			_spamdb[t][i]['DNS lookup'] = ReverseLookup(row['IP'])
-			i += 1
+	try:
+		UpdateStatus(statuswin, 'Looking up reverse DNS in the background...')
+		for t, lst in _spamdb.iteritems():
+			i = 0
+			for row in _spamdb[t]:
+				_spamdb[t][i]['DNS lookup'] = ReverseLookup(row['IP'])
+				i += 1
 
-	UpdateStatus(statuswin, 'DNS lookups done')
-	statuswin.refresh()
-	if mainwin:
-		MainWindow(mainwin)
+		UpdateStatus(statuswin, 'DNS lookups done')
+		statuswin.refresh()
+		if mainwin:
+			MainWindow(mainwin)
 
-	thread.exit()
+		thread.exit()
+	finally:
+		if _locks.get('refresh'):
+			del _locks['refresh']
 
 def ReverseLookup(ip):
 	"""
@@ -462,14 +515,14 @@ def Whitelist():
 	
 	if len(_spamdb[_curtype]) > 0:
 		try:
-			e = subprocess.check_call(['spamdb', '-a', _spamdb[_curtype][_cursel]['ip']])
+			e = subprocess.check_call(['spamdb', '-a', _spamdb[_curtype][_cursel]['IP']])
 		except subprocess.CalledProcessError:
-			print 'Error calling spamdb -a %s' % _spamdb[_curtype][_cursel]['ip']
+			print 'Error calling spamdb -a %s' % _spamdb[_curtype][_cursel]['IP']
 			print 'Exit %s' % e
 			print sys.exc_info()[0]
 			sys.exit(1)
 
-		_spamdb['white'].append(_spamdb[_curtype][_cursel])
+		_spamdb['white'].append(GetCursor())
 		del _spamdb[_curtype][_cursel]
 
 		if _cursel > len(_spamdb[_curtype]) - 1:
@@ -485,9 +538,9 @@ def Delete():
 	# Remove from db
 	if len(_spamdb[_curtype]) > 0:
 		try:
-			e = subprocess.check_call(['spamdb', '-d', _spamdb[_curtype][_cursel]['ip']])
+			e = subprocess.check_call(['spamdb', '-d', _spamdb[_curtype][_cursel]['IP']])
 		except subprocess.CalledProcessError:
-			print 'Error calling spamdb -d %s' % _spamdb[_curtype][_cursel]['ip']
+			print 'Error calling spamdb -d %s' % _spamdb[_curtype][_cursel]['IP']
 			print 'Exit %s' % e
 			print sys.exc_info()[0]
 			sys.exit(1)
@@ -504,6 +557,8 @@ def SpamdSetup(statuswin):
 	Intended to be started in a thread
 	"""
 
+	global _spamdsetup
+
 	try:
 		e = subprocess.check_call(['spamd-setup'])
 		UpdateStatus(statuswin, 'spamd-setup complete')
@@ -514,6 +569,9 @@ def SpamdSetup(statuswin):
 		print 'Exit %s' % e
 		print sys.exc_info()[0]
 		sys.exit(1)
+	finally:
+		if _locks.get('spamdsetup'):
+			del _locks['spamdsetup']
 
 if __name__ == '__main__':
 	try:

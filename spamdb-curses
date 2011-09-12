@@ -9,9 +9,14 @@
 #
 # TODO before first release:
 # - Scroll windows
+# - Add the remaining switched listed in spamdb(8)
+# - Get it working with Python 2.4-2.6
+# - Test with Python 3
+#
+# Would be nice:
 # - User-defined cols to view
 # - Sorting of rows by any column
-# - Add the remaining switched listed in spamdb(8)
+#
 
 import collections
 import curses
@@ -142,12 +147,12 @@ def Main(screen):
 		# Down
 		elif c in (curses.KEY_DOWN, ord('j')):
 			UpdateCursor(mainwin, 1)
-		elif c == ord('J'):
+		elif c == ord('J'): # XXX SHIFT + Down
 			UpdateCursor(mainwin, 20)
 		# Up
 		elif c in (curses.KEY_UP, ord('k')):
 			UpdateCursor(mainwin, -1)
-		elif c == ord('K'):
+		elif c == ord('K'): # XXX SHIFT + Up
 			UpdateCursor(mainwin, -20)
 		# Help
 		elif c == ord('?'):
@@ -169,20 +174,20 @@ def Main(screen):
 			if _readonly:
 				UpdateStatus(statuswin, 'Read-only mode. Cannot make changes.')
 			else:
+				UpdateStatus(statuswin, 'Whitelisted ' + GetCursor()['IP'])
 				Whitelist()
 				MainWindow(mainwin)
 				mainwin.refresh()
-				UpdateStatus(statuswin, 'Whitelisted ' + GetCursor()['IP'])
 			statuswin.refresh()
 		# Delete
 		elif c == ord('D'):
 			if _readonly:
 				UpdateStatus(statuswin, 'Read-only mode. Cannot make changes.')
 			else:
+				UpdateStatus(statuswin, 'Deleted ' +  GetCursor()['IP'])
 				Delete()
 				MainWindow(mainwin)
 				mainwin.refresh()
-				UpdateStatus(statuswin, 'Deleted ' +  GetCursor()['IP'])
 			statuswin.refresh()
 		# Refresh spamdb
 		elif c == ord('r'):
@@ -307,7 +312,7 @@ def DetailWindow(rootwin):
 	win = curses.newwin(totalheight, totallen, starty, startx)
 	win.clear()
 	win.border()
-	win.addstr(0, 2, 'DETAILS', curses.A_BOLD)
+	win.addstr(0, 2, ' DETAILS ', curses.A_BOLD)
 
 	i = 1
 	for k, v in _spamdb[_curtype][_cursel].iteritems():
@@ -330,6 +335,7 @@ def MainWindow(win):
 	win.addstr(1, 1, '%s%s' % (header, ' ' * (winsize[1] - len(header) - 2)),
 		curses.A_REVERSE)
 
+	maxw = winsize[1] - 43
 	i = 2
 	for l in _spamdb[_curtype]:
 		if i > winsize[0] - 2:
@@ -337,10 +343,10 @@ def MainWindow(win):
 
 		if _curtype == 'grey':
 			win.addstr(i, 5,
-				'%s | %s | %s' % (l['IP'].ljust(15), l['Expires at'], l['From']))
+				'%s | %s | %s' % (l['IP'].ljust(15), l['Expires at'], l['From'][:maxw]))
 		else:
 			win.addstr(i, 5,
-				'%s | %s | %s' % (l['IP'].ljust(15), l['Expires at'], l['DNS lookup']))
+				'%s | %s | %s' % (l['IP'].ljust(15), l['Expires at'], l['DNS lookup'][:maxw]))
 
 		i += 1
 	
@@ -515,9 +521,9 @@ def Whitelist():
 	
 	if len(_spamdb[_curtype]) > 0:
 		try:
-			e = subprocess.check_call(['spamdb', '-a', _spamdb[_curtype][_cursel]['IP']])
+			e = subprocess.check_call(['spamdb', '-a', GetCursor()['IP']])
 		except subprocess.CalledProcessError:
-			print 'Error calling spamdb -a %s' % _spamdb[_curtype][_cursel]['IP']
+			print 'Error calling spamdb -a %s' % GetCursor()['IP']
 			print 'Exit %s' % e
 			print sys.exc_info()[0]
 			sys.exit(1)

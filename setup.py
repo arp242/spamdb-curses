@@ -8,5 +8,5 @@ setup(
 	author = 'Martin Tournoij',
 	author_email = 'martin@arp242.net',
 	url = 'http://code.google.com/p/spamdb-curses/',
-	scripts = glob.glob('spamdb-curses'),
+	scripts = ['spamdb-curses'],
 )

@@ -56,6 +56,9 @@ _readonly = True
 # Keep track of various locks
 _locks = {}
 
+# Start counting at this line (for scrolling)
+_start = 0
+
 def Main(screen):
 	"""
 	The main function, called by curses.wrapper()
@@ -67,6 +70,7 @@ def Main(screen):
 	global _spamfile
 	global _readonly
 	global _locks
+	global _start
 
 	# Use "transparant" colors
 	curses.use_default_colors()
@@ -127,6 +131,7 @@ def Main(screen):
 		elif c == ord('w'):
 			if _curtype != 'white':
 				_curtype = 'white'
+				_start = 0
 				MainWindow(mainwin)
 				UpdateCursor(mainwin, 0, True)
 				mainwin.refresh()
@@ -134,6 +139,7 @@ def Main(screen):
 		elif c == ord('g'):
 			if _curtype != 'grey':
 				_curtype = 'grey'
+				_start = 0
 				MainWindow(mainwin)
 				UpdateCursor(mainwin, 0, True)
 				mainwin.refresh()
@@ -141,18 +147,19 @@ def Main(screen):
 		elif c == ord('t'):
 			if _curtype != 'trapped':
 				_curtype = 'trapped'
+				_start = 0
 				MainWindow(mainwin)
 				UpdateCursor(mainwin, 0, True)
 				mainwin.refresh()
 		# Down
 		elif c in (curses.KEY_DOWN, ord('j')):
 			UpdateCursor(mainwin, 1)
-		elif c == ord('J'): # XXX SHIFT + Down
+		elif c in (curses.KEY_NPAGE, ord('J')):
 			UpdateCursor(mainwin, 20)
 		# Up
 		elif c in (curses.KEY_UP, ord('k')):
 			UpdateCursor(mainwin, -1)
-		elif c == ord('K'): # XXX SHIFT + Up
+		elif c in (curses.KEY_PPAGE, ord('K')):
 			UpdateCursor(mainwin, -20)
 		# Help
 		elif c == ord('?'):
@@ -170,7 +177,7 @@ def Main(screen):
 			MainWindow(mainwin)
 			mainwin.refresh()
 		# Whitelist
-		elif c == ord('W'):
+		elif c == ord('a'):
 			if _readonly:
 				UpdateStatus(statuswin, 'Read-only mode. Cannot make changes.')
 			else:
@@ -180,7 +187,7 @@ def Main(screen):
 				mainwin.refresh()
 			statuswin.refresh()
 		# Delete
-		elif c == ord('D'):
+		elif c == ord('d'):
 			if _readonly:
 				UpdateStatus(statuswin, 'Read-only mode. Cannot make changes.')
 			else:
@@ -240,6 +247,7 @@ def UpdateCursor(win, cur, absolute=False):
 	"""
 
 	global _cursel
+	global _start
 
 	# "Delete" current cursor
 	win.addstr(_cursel + 2, 2, '  ')
@@ -251,13 +259,28 @@ def UpdateCursor(win, cur, absolute=False):
 
 	# Make sure we don't go before the first or beyond the last row
 	winsize = win.getmaxyx()
+	updatestart = False
 	if _cursel > len(_spamdb[_curtype]) - 1:
 		_cursel = len(_spamdb[_curtype]) - 1
+	elif _cursel < 0 and _start > 0:
+		updatestart = True
+		_start += cur
+		_cursel = 0
 	elif _cursel < 0:
 		_cursel = 0
 	elif _cursel > winsize[0] - 4:
+		updatestart = True
+		_start += cur
 		_cursel = winsize[0] - 4
 
+	if _start < 0:
+		_start = 0
+
+	if _start > len(_spamdb[_curtype]) - winsize[0] + 3:
+		_start = len(_spamdb[_curtype]) - winsize[0] + 3
+
+	if updatestart:
+		MainWindow(win, False)
 	win.addstr(_cursel + 2, 2, '-> ')
 	win.refresh()
 
@@ -321,7 +344,7 @@ def DetailWindow(rootwin):
 
 	return win
 
-def MainWindow(win):
+def MainWindow(win, updatecur=True):
 	"""
 	Draw the main window
 	"""
@@ -337,9 +360,14 @@ def MainWindow(win):
 
 	maxw = winsize[1] - 43
 	i = 2
+	j = -1
 	for l in _spamdb[_curtype]:
 		if i > winsize[0] - 2:
 			break;
+
+		j += 1
+		if _start > j:
+			continue
 
 		if _curtype == 'grey':
 			win.addstr(i, 5,
@@ -350,8 +378,10 @@ def MainWindow(win):
 
 		i += 1
 	
-	win.addstr(1, 2, repr(i - 2), curses.A_REVERSE)
-	UpdateCursor(win, 0)
+	win.addstr(1, 2, '%s %s' % (len(_spamdb[_curtype]), _start), curses.A_REVERSE)
+
+	if updatecur:
+		UpdateCursor(win, 0)
 
 def HelpWindow(win):
 	"""
@@ -363,8 +393,7 @@ def HelpWindow(win):
 	winsize = win.getmaxyx()
 
 	text = '''
-spamdb-curses 1.0
-Martin Tournoij <martin@arp242.net>
+spamdb-curses 1.0, Martin Tournoij <martin@arp242.net>
 http://code.google.com/p/spamdb-curses/
 Free for any use. There are no restrictions.
 
@@ -373,24 +402,22 @@ Keybinds:
 	q, x\t\tExit
 	Up, h\t\tMove up
 	Down, j\t\tMove down
-	J\t\tMove 20 down
-	K\t\tMove 20 up
+	J, PageDown\tMove 20 down
+	K, PageUp\tMove 20 up
 	w\t\tShow WHITE list
 	g\t\tShow GREY list
-	t\t\tShow the TRAPPED list
+	t\t\tShow TRAPPED list
 	Space, Enter\tShow details
 
 Interfacing with spamd:
 	r\t\tRefresh information from spamdb(8)
 	s\t\tRun spamd-setup(8)
-	W\t\tWhitelist selected entry or update the "last seen" field if
-	\t\tit's already whitelisted
-	D\t\tDelete selected entry
+	a\t\tWhitelist selected entry or update the "last seen" field if
+	\t\tit's already whitelisted (spamdb -a)
+	d\t\tDelete selected entry (spamdb -d)
 
 See also:
   spamd(8), spamdb(8), spamd-setup(8), spamlogd(8), spamd.conf(5)
-
-Press any key to return
 '''
 
 	win.addstr(0, 2, 'HELP', curses.A_BOLD)
@@ -544,10 +571,13 @@ def Delete():
 	# Remove from db
 	if len(_spamdb[_curtype]) > 0:
 		try:
-			e = subprocess.check_call(['spamdb', '-d', _spamdb[_curtype][_cursel]['IP']])
+			e = subprocess.check_call(['spamdb', '-d', GetCursor()['IP']])
 		except subprocess.CalledProcessError:
-			print 'Error calling spamdb -d %s' % _spamdb[_curtype][_cursel]['IP']
-			print 'Exit %s' % e
+			print 'Error calling spamdb -d %s' % GetCursor()['IP']
+			try:
+				print 'Exit %s' % e
+			except:
+				pass
 			print sys.exc_info()[0]
 			sys.exit(1)
 

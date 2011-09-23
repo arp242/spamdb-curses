@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-from disturils.core import setup
+from distutils.core import setup
 
 setup(
 	name = 'spamdb-curses',
@@ -9,4 +9,5 @@ setup(
 	author_email = 'martin@arp242.net',
 	url = 'http://code.google.com/p/spamdb-curses/',
 	scripts = ['spamdb-curses'],
+	packages = ['spamdbcurses'],
 )

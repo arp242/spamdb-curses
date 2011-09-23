@@ -7,18 +7,9 @@
 # http://code.google.com/p/spamdb-curses/
 # Free for any use. There are no restrictions.
 #
-# TODO before first release:
-# - Scroll windows
-# - Add the remaining switched listed in spamdb(8)
 # - Get it working with Python 2.4-2.6
-# - Test with Python 3
-#
-# Would be nice:
-# - User-defined cols to view
-# - Sorting of rows by any column
 #
 
-import collections
 import curses
 import os
 import shutil
@@ -31,6 +22,12 @@ try:
 	import thread
 except ImportError:
 	import dummy_thread
+
+
+if sys.version_info.major == 2 and sys.version_info.minor < 7:
+	from spamdbcurses import OrderedDict as collections
+else:
+	import collections
 
 
 ### Global variables

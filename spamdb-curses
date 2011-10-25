@@ -7,8 +7,6 @@
 # http://code.google.com/p/spamdb-curses/
 # Free for any use. There are no restrictions.
 #
-# - Get it working with Python 2.4-2.6
-#
 
 import curses
 import os
@@ -23,12 +21,10 @@ try:
 except ImportError:
 	import dummy_thread
 
-
 if sys.version_info.major == 2 and sys.version_info.minor < 7:
 	from spamdbcurses import OrderedDict as collections
 else:
 	import collections
-
 
 ### Global variables
 
@@ -77,6 +73,11 @@ def Main(screen):
 
 	(maxy, maxx) = screen.getmaxyx()
 
+	if maxy < 19 or maxx < 60:
+		print 'Your terminal needs to be at least 19 lines in height'
+		print 'and 60 characters in width.'
+		sys.exit(1)
+
 	_spamdb = GetSpamdb()
 
 	mainwin = screen.subwin(maxy - 6, maxx, 0, 0)
@@ -114,6 +115,11 @@ def Main(screen):
 			del statuswin
 
 			(maxy, maxx) = screen.getmaxyx()
+			if maxy < 19 or maxx < 60:
+				print 'Your terminal needs to be at least 19 lines in height'
+				print 'and 60 characters in width.'
+				sys.exit(1)
+
 			mainwin = screen.subwin(maxy - 6, maxx, 0, 0)
 			MainWindow(mainwin)
 			UpdateCursor(mainwin, 0)
@@ -311,7 +317,7 @@ def DetailWindow(rootwin):
 	return: New window object
 	"""
 
-	rootwinsize = rootwin.getmaxyx()
+	(maxy, maxx) = rootwin.getmaxyx()
 
 	# Get longest string
 	keylen = 0
@@ -325,9 +331,13 @@ def DetailWindow(rootwin):
 	totallen = keylen + vlen + 12
 	totalheight = len(GetCursor()) + 2
 
+	if totallen > maxx:
+		totallen = maxx - 4
+		vlen = maxx - keylen - 14
+
 	# Get center position
-	startx = (rootwinsize[1] / 2) - (totallen / 2)
-	starty = (rootwinsize[0] / 2) - (totalheight / 2)
+	startx = (maxx / 2) - (totallen / 2)
+	starty = (maxy / 2) - (totalheight / 2)
 
 	win = curses.newwin(totalheight, totallen, starty, startx)
 	win.clear()
@@ -335,7 +345,8 @@ def DetailWindow(rootwin):
 	win.addstr(0, 2, ' DETAILS ', curses.A_BOLD)
 
 	i = 1
-	for k, v in _spamdb[_curtype][_cursel].iteritems():
+	for k, v in GetCursor().iteritems():
+		v = v[:vlen]
 		win.addstr(i, 2, ' %s %s' % (k.ljust(keylen + 5), v))
 		i += 1
 
@@ -350,7 +361,7 @@ def MainWindow(win, updatecur=True):
 	win.border()
 	winsize = win.getmaxyx()
 
-	win.addstr(0, 2, ' ' + _curtype.upper() + ' - spamdb-curses 1.0 ', curses.A_BOLD)
+	win.addstr(0, 2, ' ' + _curtype.upper() + ' - spamdb-curses 1.1 ', curses.A_BOLD)
 	header = '         IP                Expire             From'
 	win.addstr(1, 1, '%s%s' % (header, ' ' * (winsize[1] - len(header) - 2)),
 		curses.A_REVERSE)
@@ -390,7 +401,7 @@ def HelpWindow(win):
 	winsize = win.getmaxyx()
 
 	text = '''
-spamdb-curses 1.0, Martin Tournoij <martin@arp242.net>
+spamdb-curses 1.1, Martin Tournoij <martin@arp242.net>
 http://code.google.com/p/spamdb-curses/
 Free for any use. There are no restrictions.
 
@@ -523,18 +534,12 @@ def ReverseLookup(ip):
 	Reverse DNS lookup (PTR record)
 	"""
 
-	#try:
-	#	a = socket.gethostbyaddr(ip)[0]
-	#	return a
-	#except socket.herror:
-	#	return ip
-
-	# At the moment dig works better because we can specify a timeout -- We're
-	# not going to wait for **slow** spammer DNS servers ...
-	# XXX Can this be handled better?
-	proc = subprocess.Popen(['dig', '-x', ip, '+short', '+time=1'], stdout=subprocess.PIPE)
-	output = proc.communicate()[0].split('\n')
-	return output[0].strip()
+	socket.setdefaulttimeout(1)
+	try:
+		a = socket.gethostbyaddr(ip)[0]
+		return a
+	except socket.herror:
+		return '**Failed**' #ip
 
 def Whitelist():
 	"""

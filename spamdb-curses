@@ -3,9 +3,9 @@
 #
 # spamdb-curses: A human-friendly interface around spamdb(8)
 #
-# Martin Tournoij <martin@arp242.net>
-# http://code.google.com/p/spamdb-curses/
-# Free for any use. There are no restrictions.
+# Copyright © 2011-2012 Martin Tournoij <martin@arp242.net>
+# MIT License applies: http://opensource.org/licenses/MIT
+# http://code.arp242.net/spamdb-curses/
 #
 
 import curses
@@ -16,10 +16,16 @@ import subprocess
 import sys
 import time
 
-try:
-	import thread
-except ImportError:
-	import dummy_thread
+if sys.version_info[0] == 2:
+	try:
+		import thread as _thread
+	except ImportError:
+		import _dummy_thread as dummy_thread
+else:
+	try:
+		import _thread
+	except ImportError:
+		import _dummy_thread
 
 if sys.version_info.major == 2 and sys.version_info.minor < 7:
 	from spamdbcurses import OrderedDict as collections
@@ -69,13 +75,16 @@ def Main(screen):
 	curses.use_default_colors()
 
 	# Don't display cursor
-	curses.curs_set(0)
+	try:
+		curses.curs_set(0)
+	except:
+		pass
 
 	(maxy, maxx) = screen.getmaxyx()
 
 	if maxy < 19 or maxx < 60:
-		print 'Your terminal needs to be at least 19 lines in height'
-		print 'and 60 characters in width.'
+		print('Your terminal needs to be at least 19 lines in height')
+		print('and 60 characters in width.')
 		sys.exit(1)
 
 	_spamdb = GetSpamdb()
@@ -85,7 +94,7 @@ def Main(screen):
 	UpdateCursor(mainwin, 0)
 
 	statuswin = screen.subwin(6, maxx, maxy - 6, 0)
-	thread.start_new_thread(DnsLookups, (statuswin,))
+	_thread.start_new_thread(DnsLookups, (statuswin,))
 
 	# Check if we can write the spamdb and acually make changes
 	# XXX This is not the most reliable manner, for example the spamdb binary
@@ -116,8 +125,8 @@ def Main(screen):
 
 			(maxy, maxx) = screen.getmaxyx()
 			if maxy < 19 or maxx < 60:
-				print 'Your terminal needs to be at least 19 lines in height'
-				print 'and 60 characters in width.'
+				print('Your terminal needs to be at least 19 lines in height')
+				print('and 60 characters in width.')
 				sys.exit(1)
 
 			mainwin = screen.subwin(maxy - 6, maxx, 0, 0)
@@ -214,7 +223,7 @@ def Main(screen):
 				mainwin.refresh()
 				UpdateStatus(statuswin, 'Done!')
 				statuswin.refresh()
-				thread.start_new_thread(DnsLookups, (statuswin,mainwin))
+				_thread.start_new_thread(DnsLookups, (statuswin,mainwin))
 		# Run spamd-setup
 		elif c == ord('s'):
 			if _readonly:
@@ -227,7 +236,7 @@ def Main(screen):
 				else:
 					UpdateStatus(statuswin, 'Starting spamd-setup in the background...')
 					statuswin.refresh()
-					thread.start_new_thread(SpamdSetup, (statuswin,))
+					_thread.start_new_thread(SpamdSetup, (statuswin,))
 
 
 ###
@@ -322,7 +331,7 @@ def DetailWindow(rootwin):
 	# Get longest string
 	keylen = 0
 	vlen = 0
-	for k, v in GetCursor().iteritems():
+	for k, v in GetCursor().items():
 		if len(repr(k)) > keylen:
 			keylen = len(repr(k))
 		if len(repr(v)) > vlen:
@@ -345,7 +354,7 @@ def DetailWindow(rootwin):
 	win.addstr(0, 2, ' DETAILS ', curses.A_BOLD)
 
 	i = 1
-	for k, v in GetCursor().iteritems():
+	for k, v in GetCursor().items():
 		v = v[:vlen]
 		win.addstr(i, 2, ' %s %s' % (k.ljust(keylen + 5), v))
 		i += 1
@@ -361,7 +370,7 @@ def MainWindow(win, updatecur=True):
 	win.border()
 	winsize = win.getmaxyx()
 
-	win.addstr(0, 2, ' ' + _curtype.upper() + ' - spamdb-curses 1.1 ', curses.A_BOLD)
+	win.addstr(0, 2, ' ' + _curtype.upper() + ' - spamdb-curses 1.2 ', curses.A_BOLD)
 	header = '         IP                Expire             From'
 	win.addstr(1, 1, '%s%s' % (header, ' ' * (winsize[1] - len(header) - 2)),
 		curses.A_REVERSE)
@@ -401,9 +410,9 @@ def HelpWindow(win):
 	winsize = win.getmaxyx()
 
 	text = '''
-spamdb-curses 1.1, Martin Tournoij <martin@arp242.net>
-http://code.google.com/p/spamdb-curses/
-Free for any use. There are no restrictions.
+spamdb-curses 1.2, Martin Tournoij <martin@arp242.net>
+http://code.arp242.net/spamdb-curses/
+MIT License applies: http://opensource.org/licenses/MIT
 
 Keybinds:
 	?\t\tThis help
@@ -448,8 +457,12 @@ def GetSpamdb():
 	backport for Python >= 2.4: http://code.activestate.com/recipes/576693/
 	"""
 
-	proc = subprocess.Popen(['spamdb'], stdout=subprocess.PIPE)
-	output = proc.communicate()[0].split('\n')
+	try:
+		proc = subprocess.Popen(['spamdb'], stdout=subprocess.PIPE)
+	except OSError:
+		print('\n\nError running spamd:\n%s' % sys.exc_info()[1])
+		sys.exit(1)
+	output = proc.communicate()[0].decode().split('\n')
 
 	spamdb = {
 		'white': [],
@@ -513,7 +526,7 @@ def DnsLookups(statuswin, mainwin=None):
 
 	try:
 		UpdateStatus(statuswin, 'Looking up reverse DNS in the background...')
-		for t, lst in _spamdb.iteritems():
+		for t, lst in _spamdb.items():
 			i = 0
 			for row in _spamdb[t]:
 				_spamdb[t][i]['DNS lookup'] = ReverseLookup(row['IP'])
@@ -524,7 +537,7 @@ def DnsLookups(statuswin, mainwin=None):
 		if mainwin:
 			MainWindow(mainwin)
 
-		thread.exit()
+		_thread.exit()
 	finally:
 		if _locks.get('refresh'):
 			del _locks['refresh']
@@ -552,9 +565,9 @@ def Whitelist():
 		try:
 			e = subprocess.check_call(['spamdb', '-a', GetCursor()['IP']])
 		except subprocess.CalledProcessError:
-			print 'Error calling spamdb -a %s' % GetCursor()['IP']
-			print 'Exit %s' % e
-			print sys.exc_info()[0]
+			print('Error calling spamdb -a %s' % GetCursor()['IP'])
+			print('Exit %s' % e)
+			print(sys.exc_info()[0])
 			sys.exit(1)
 
 		_spamdb['white'].append(GetCursor())
@@ -575,12 +588,12 @@ def Delete():
 		try:
 			e = subprocess.check_call(['spamdb', '-d', GetCursor()['IP']])
 		except subprocess.CalledProcessError:
-			print 'Error calling spamdb -d %s' % GetCursor()['IP']
+			print('Error calling spamdb -d %s' % GetCursor()['IP'])
 			try:
-				print 'Exit %s' % e
+				print('Exit %s' % e)
 			except:
 				pass
-			print sys.exc_info()[0]
+			print(sys.exc_info()[0])
 			sys.exit(1)
 
 		del _spamdb[_curtype][_cursel]
@@ -601,11 +614,11 @@ def SpamdSetup(statuswin):
 		e = subprocess.check_call(['spamd-setup'])
 		UpdateStatus(statuswin, 'spamd-setup complete')
 		statuswin.refresh()
-		thread.exit()
+		_thread.exit()
 	except subprocess.CalledProcessError:
-		print 'Error calling spamd-setup'
-		print 'Exit %s' % e
-		print sys.exc_info()[0]
+		print('Error calling spamd-setup')
+		print('Exit %s' % e)
+		print(sys.exc_info()[0])
 		sys.exit(1)
 	finally:
 		if _locks.get('spamdsetup'):

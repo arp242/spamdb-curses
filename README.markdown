@@ -8,6 +8,7 @@ It's simple, and "just works"™ ... What more is there to say?
 
 ChangeLog
 =========
+
 Version 1.2 - 2012-11-01
 ------------------------
 - Now works with both Python 2 & Python 3.
